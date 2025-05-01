@@ -1,0 +1,19 @@
+
+books=[
+   {
+       "id":1,
+       "title":"Book1",
+       "author":"Author1",
+       "language":"English",
+       "page_count":100,
+       "published_year":2020
+   },
+   {
+       "id":2,
+       "title":"Book2",
+       "author":"Author2",
+       "language":"French",
+       "page_count":200,
+       "published_year":2021
+   }
+]
