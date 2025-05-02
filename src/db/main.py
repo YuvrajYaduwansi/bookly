@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 # Replace postgresql:// with postgresql+asyncpg:// in the URL'
 # async_db_url not needed anymore as we directly put +asyncpg in env var
 # async_db_url = config.DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://')
-engine = create_async_engine(config.DATABASE_URL, echo=True,connect_args={"ssl":"require"})
+engine = create_async_engine(config.DATABASE_URL, connect_args={"ssl":"require"})
 
 async def init_db():
     async with engine.begin() as conn:
