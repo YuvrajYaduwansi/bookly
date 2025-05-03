@@ -1,18 +1,18 @@
-from fastapi import APIRouter,HTTPException,status,Depends
+from fastapi import APIRouter, BackgroundTasks,HTTPException,status,Depends
 from fastapi.responses import JSONResponse
 
 from src.db.main import get_session
 from src.db.redis import add_jti_to_blocklist
-from .schemas import EmailModel, UserBooksModel, UserCreateModel,UserModel,UserLoginModel,UserResponseModel
+from .schemas import EmailModel, PasswordResetConfirmModel, PasswordResetRequestModel, UserBooksModel, UserCreateModel,UserModel,UserLoginModel,UserResponseModel
 from .service import UserService
 from sqlmodel.ext.asyncio.session import AsyncSession
-from .utils import create_access_token, create_url_safe_token,decode_token, decode_url_safe_token,verify_password
+from .utils import create_access_token, create_url_safe_token,decode_token, decode_url_safe_token, generate_password_hash,verify_password
 from datetime import timedelta,datetime
 from .dependencies import RefreshTokenBearer,AccessTokenBearer,get_current_user,RoleChecker
 from src.errors import UserAlreadyExists,UserNotFound,InvalidCredentials,InvalidToken
 from src.mail import create_message,mail
 from src.config import config
-
+from src.celery_tasks import send_email as celery_send_email
 
 auth_router=APIRouter()
 user_service=UserService()
@@ -23,12 +23,17 @@ REFRESH_TOKEN_EXPIRY=2
 @auth_router.post('/send_email')
 async def send_email(emails:EmailModel):
     html="<h1>Welcome to our website</h1>"
-    message=create_message(
-        recipients=emails.addresses,
-        subject="Hello",
-        body=html,
-    )
-    await mail.send_message(message)
+    subject="Welcome to our website"
+    # old way without background tasks
+    # message=create_message(
+    #     recipients=emails.addresses,
+    #     subject="Hello",
+    #     body=html,
+    # )
+    # await mail.send_message(message)
+
+    # new way with celery background tasks
+    celery_send_email.delay(emails.addresses,subject,html)
 
     return JSONResponse(content={
         "message":"Email sent successfully",
@@ -37,7 +42,7 @@ async def send_email(emails:EmailModel):
     )
 
 @auth_router.post('/signup',status_code=status.HTTP_201_CREATED,response_model=UserResponseModel)
-async def create_user_Account(user_data:UserCreateModel,session:AsyncSession=Depends(get_session)):
+async def create_user_Account(user_data:UserCreateModel,bg_tasks:BackgroundTasks,session:AsyncSession=Depends(get_session)):
     email=user_data.email
     user_exists=await user_service.user_exists(email,session)
 
@@ -56,13 +61,20 @@ async def create_user_Account(user_data:UserCreateModel,session:AsyncSession=Dep
     <p>Please click the link below to verify your email</p>
     <a href="{link}">Verify Email</a>
     """
-    message=create_message(
-        recipients=[email],
-        subject="Verify your email",
-        body=html_message,
-    )
-    await mail.send_message(message)
+    subject="Verify your email"
+    # old way without background tasks
+    # message=create_message(
+    #     recipients=[email],
+    #     subject="Verify your email",
+    #     body=html_message,
+    # )
+    # await mail.send_message(message)
 
+    # new way with background tasks
+    # bg_tasks.add_task(mail.send_message,message)
+
+   # new way with celery background tasks
+    celery_send_email.delay([email],subject,html_message)
 
 
     return {
@@ -173,3 +185,70 @@ async def revoke_token(token_details:dict=Depends(AccessTokenBearer())):
     },
     status_code=status.HTTP_200_OK
     )
+
+
+@auth_router.post('/password-reset-request')
+async def password_reset_request(email_data:PasswordResetRequestModel):
+
+    email=email_data.email
+    token=create_url_safe_token({'email':email})
+    
+    link=f"http://{config.DOMAIN}/api/v1/auth/password-reset-confirm/{token}"
+
+
+    html_message=f"""
+    <h1>Reset your password</h1>
+    <p>Please click the link below to reset your password</p>
+    <a href="{link}">Reset Password</a>
+    """
+    subject="Reset your password"
+    # message=create_message(
+    #     recipients=[email],
+    #     subject="Reset your password",
+    #     body=html_message,
+    # )
+    # await mail.send_message(message)
+
+    # new way with celery background tasks
+    celery_send_email.delay([email],subject,html_message)
+
+    return JSONResponse(content={
+        "message":"Password reset request sent successfully! Check your email for verification",
+    },
+    status_code=status.HTTP_200_OK
+    )
+
+
+@auth_router.post('/password-reset-confirm/{token}')
+async def password_reset_confirm(token:str,password_data:PasswordResetConfirmModel,session:AsyncSession=Depends(get_session)):
+
+    new_password=password_data.new_password
+    confirm_password=password_data.confirm_password
+
+    if new_password!=confirm_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,detail="Passwords do not match")
+
+    token_data=decode_url_safe_token(token)
+    email=token_data.get('email')
+
+    if email:
+        user=await user_service.get_user_by_email(email,session)
+
+        if not user:
+            raise UserNotFound()
+        
+        password_hash=generate_password_hash(new_password)
+        await user_service.update_user(user,{"password_hash":password_hash},session)
+
+        return JSONResponse(content={
+            "message":"Password reset successfully",
+        },
+        status_code=status.HTTP_200_OK
+        )
+
+    return JSONResponse(content={
+        "message":"Error occurred while resetting password",
+    },
+    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+    )
+

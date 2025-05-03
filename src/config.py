@@ -23,3 +23,7 @@ class Settings(BaseSettings):
 
 
 config=Settings()
+
+
+broker_url=f"redis://{config.REDIS_HOST}:{config.REDIS_PORT}/0"
+result_backend=broker_url
